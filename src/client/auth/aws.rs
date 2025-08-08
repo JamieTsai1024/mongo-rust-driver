@@ -67,6 +67,7 @@ async fn authenticate_stream_inner(
     conn: &mut Connection,
     credential: &Credential,
     server_api: Option<&ServerApi>,
+    aws_context: Option<&aws::AwsCredentialContext>,
     // RUST-1529 note: http_client is used in the non-AWS SDK implementation to get credentials
     _http_client: &HttpClient,
 ) -> Result<()> {
@@ -123,9 +124,13 @@ async fn authenticate_stream_inner(
     //     }
     // };
 
-    let creds = get_aws_credentials(credential).await.map_err(|e| {
-        Error::authentication_error(MECH_NAME, &format!("failed to get creds: {e}"))
-    })?;
+    // TODO: pass aws_context
+
+    let creds = get_aws_credentials(credential, aws_context)
+        .await
+        .map_err(|e| {
+            Error::authentication_error(MECH_NAME, &format!("failed to get creds: {e}"))
+        })?;
 
     let date = Utc::now();
 
@@ -183,7 +188,21 @@ async fn authenticate_stream_inner(
 }
 
 // Find credentials using MongoDB URI or AWS SDK
-pub(crate) async fn get_aws_credentials(credential: &Credential) -> Result<Credentials> {
+pub(crate) async fn get_aws_credentials(
+    credential: &Credential,
+    aws_context: Option<&AwsCredentialContext>,
+) -> Result<Credentials> {
+    // Priority 1: Custom AWS credential provider
+    if let Some(ctx) = aws_context {
+        if let Some(provider) = &ctx.custom_provider {
+            let creds = provider.provide_credentials().await.map_err(|e| {
+                Error::authentication_error(MECH_NAME, &format!("custom provider error: {e}"))
+            })?;
+            return Ok(creds);
+        }
+    }
+
+    // Priority 2: Credentials in the MongoDB URI
     if let (Some(access_key), Some(secret_key)) = (&credential.username, &credential.password) {
         // Look for credentials in the MongoDB URI
         Ok(Credentials::new(
@@ -198,7 +217,7 @@ pub(crate) async fn get_aws_credentials(credential: &Credential) -> Result<Crede
             "MongoDB URI",
         ))
     } else {
-        // If credentials are not provided in the URI, use the AWS SDK to load
+        // Priority 3: Default AWS SDK provider
         let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
         let creds = config
             .credentials_provider()

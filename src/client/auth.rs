@@ -282,6 +282,7 @@ impl AuthMechanism {
         }
     }
 
+    // trace from credential
     pub(crate) async fn authenticate_stream(
         &self,
         stream: &mut Connection,
@@ -320,7 +321,14 @@ impl AuthMechanism {
             }
             #[cfg(feature = "aws-auth")]
             AuthMechanism::MongoDbAws => {
-                aws::authenticate_stream(stream, credential, server_api, &opts.http_client).await
+                aws::authenticate_stream(
+                    stream,
+                    credential,
+                    server_api,
+                    &opts.http_client,
+                    &opts.credential_provider,
+                )
+                .await
             }
             AuthMechanism::MongoDbCr => Err(ErrorKind::Authentication {
                 message: "MONGODB-CR is deprecated and not supported by this driver. Use SCRAM \
@@ -416,6 +424,8 @@ pub(crate) struct AuthOptions {
     server_api: Option<ServerApi>,
     #[cfg(feature = "aws-auth")]
     http_client: crate::runtime::HttpClient,
+    #[cfg(feature = "aws-auth")]
+    credential_provider: Option<aws::CredentialProvider>, // todo: verify
     #[cfg(feature = "gssapi-auth")]
     resolver_config: Option<ResolverConfig>,
 }
@@ -533,6 +543,7 @@ impl Credential {
         if let Some(first_round) = first_round {
             let server_api = opts.server_api.as_ref();
             return match first_round {
+                // self is where credential comes from
                 FirstRound::Scram(version, first_round) => {
                     version
                         .authenticate_stream(conn, self, server_api, first_round)
@@ -552,6 +563,7 @@ impl Credential {
             Some(ref m) => Cow::Borrowed(m),
         };
         // Authenticate according to the chosen mechanism.
+        // options sent from here
         mechanism.authenticate_stream(conn, self, opts).await
     }
 
